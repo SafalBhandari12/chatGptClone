@@ -1,6 +1,7 @@
 import express from "express";
 import "dotenv/config";
 import { openai, model } from "./openAi.js";
+import { fileStorage, runAgent } from "./agent.js";
 
 const app = express();
 
@@ -21,18 +22,10 @@ app.post("/api/chat", async (req, res) => {
       return;
     }
 
-    const response = await openai.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: message,
-        },  
-      ],
-    });
+    const response = await runAgent(message);
 
-    res.json({
-      reply: response.choices[0]?.message?.content ?? "",
+    res.status(200).json({
+      response,
     });
   } catch (error) {
     console.error("AI request failed:", error);
@@ -40,6 +33,22 @@ app.post("/api/chat", async (req, res) => {
     res.status(500).json({
       error: "Failed to generate a response",
     });
+  }
+});
+
+app.get("/download/:fileId", async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const fileInfo = fileStorage[fileId];
+
+    if (!fileInfo) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    res.download(fileInfo.path, fileInfo.name);
+  } catch (error) {
+    console.error("File download failed:", error);
+    res.status(500).json({ error: "Failed to download the file" });
   }
 });
 
