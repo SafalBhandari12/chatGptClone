@@ -60,6 +60,19 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_uploaded_files",
+      description: "List the files that have been uploaded by the user",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export default tools;

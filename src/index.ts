@@ -1,7 +1,9 @@
 import express from "express";
 import "dotenv/config";
-import { openai, model } from "./openAi.js";
 import { fileStorage, runAgent } from "./agent.js";
+import fs from "fs/promises";
+import multer from "multer";
+import path from "path";
 
 const app = express();
 
@@ -11,9 +13,18 @@ app.get("/", (_req, res) => {
   res.json({ message: "AI API is running" });
 });
 
-app.post("/api/chat", async (req, res) => {
+const upload = multer({ dest: "uploads/", limits: { fileSize: 1024 * 1024 } });
+
+app.post("/api/chat", upload.array("files", 5), async (req, res) => {
   try {
     const { message } = req.body as { message?: string };
+    const uploadFiles = req.files as Express.Multer.File[] | [];
+
+    const fileInfo = uploadFiles.map((file) => ({
+      originalName: file.originalname,
+      path: path.resolve(file.path),
+      mimeType: file.mimetype,
+    }));
 
     if (typeof message !== "string" || !message.trim()) {
       res.status(400).json({
@@ -22,7 +33,15 @@ app.post("/api/chat", async (req, res) => {
       return;
     }
 
-    const response = await runAgent(message);
+    const response = await runAgent(message, fileInfo);
+
+    for (const file of uploadFiles) {
+      try {
+        await fs.unlink(file.path);
+      } catch (error) {
+        console.error(`Failed to delete file ${file.path}:`, error);
+      }
+    }
 
     res.status(200).json({
       response,
