@@ -8,6 +8,12 @@ import crypto from "crypto";
 import multer from "multer";
 import { saveLog } from "./logger.js";
 
+export type AgentResult = {
+  response: string;
+  // Everything produced after the user message: tool calls, tool results, final reply.
+  newMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+};
+
 const fileStorage: Record<string, { path: string; name: string }> = {};
 
 export async function runAgent(
@@ -17,7 +23,8 @@ export async function runAgent(
     path: string;
     mimeType: string;
   }>,
-): Promise<string> {
+  history: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [],
+): Promise<AgentResult> {
   const startedAt = new Date().toISOString();
   const sandbox = await Sandbox.create({
     runtime: "python3.13",
@@ -81,11 +88,18 @@ export async function runAgent(
         "When you use attach_file and get a download link back, include that link in your response to the user." +
         "Files are in /vercel/sandbox/ directory. You can read files using bash (cat command), and edit them using Python. ",
     },
+    ...history,
     {
       role: "user",
       content: userMessage,
     },
   ];
+
+  const newMessagesStart = messages.length;
+  const result = (response: string): AgentResult => ({
+    response,
+    newMessages: messages.slice(newMessagesStart),
+  });
 
   try {
     for (let i = 0; i < 8; i++) {
@@ -106,7 +120,7 @@ export async function runAgent(
       messages.push(assistantMessage);
 
       if (!assistantMessage.tool_calls?.length) {
-        return assistantMessage.content ?? "";
+        return result(assistantMessage.content ?? "");
       }
 
       for (const toolCall of assistantMessage.tool_calls) {
@@ -247,7 +261,11 @@ export async function runAgent(
         }
       }
     }
-    return "Number of iterations exceeded. Please refine your request.";
+    messages.push({
+      role: "assistant",
+      content: "Number of iterations exceeded. Please refine your request.",
+    });
+    return result("Number of iterations exceeded. Please refine your request.");
   } finally {
     await saveLog({
       startedAt,
