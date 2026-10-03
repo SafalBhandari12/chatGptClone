@@ -6,6 +6,7 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import multer from "multer";
+import { saveLog } from "./logger.js";
 
 const fileStorage: Record<string, { path: string; name: string }> = {};
 
@@ -17,6 +18,7 @@ export async function runAgent(
     mimeType: string;
   }>,
 ): Promise<string> {
+  const startedAt = new Date().toISOString();
   const sandbox = await Sandbox.create({
     runtime: "python3.13",
   });
@@ -247,6 +249,13 @@ export async function runAgent(
     }
     return "Number of iterations exceeded. Please refine your request.";
   } finally {
+    await saveLog({
+      startedAt,
+      endedAt: new Date().toISOString(),
+      userMessage,
+      uploadedFiles: sandboxFiles,
+      messages,
+    });
     sandbox.stop();
   }
 }
