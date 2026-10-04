@@ -8,6 +8,12 @@ import crypto from "crypto";
 import multer from "multer";
 import { saveLog } from "./logger.js";
 
+export type AgentEvent =
+  | { type: "text"; delta: string }
+  | { type: "tool_start"; name: string }
+  | { type: "tool_end"; name: string; output: string }
+  | { type: "done"; conversationId: string; response: string };
+
 export type AgentResult = {
   response: string;
   // Everything produced after the user message: tool calls, tool results, final reply.
@@ -24,6 +30,7 @@ export async function runAgent(
     mimeType: string;
   }>,
   history: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [],
+  onEvent?: (event: AgentEvent) => void,
 ): Promise<AgentResult> {
   const startedAt = new Date().toISOString();
   const sandbox = await Sandbox.create({
@@ -101,26 +108,82 @@ export async function runAgent(
     newMessages: messages.slice(newMessagesStart),
   });
 
+  let fullResponse = "";
+
   try {
     for (let i = 0; i < 8; i++) {
       console.log(`Iteration ${i + 1}: Sending messages to OpenAI API...`);
-      const response = await openai.chat.completions.create({
+
+      const stream = await openai.chat.completions.create({
         model: model,
         messages,
         tools: tools,
         tool_choice: "auto",
+        stream: true,
       });
 
-      const assistantMessage = response.choices[0]?.message;
+      let content = "";
 
-      if (!assistantMessage) {
-        throw new Error("No message returned from the assistant.");
+      const toolCalls: Record<
+        number,
+        {
+          id: string;
+          type: "function";
+          function: { name: string; arguments: string };
+        }
+      > = {};
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (!delta) continue;
+
+        if (delta.content) {
+          content += delta.content;
+          fullResponse += delta.content;
+          onEvent?.({ type: "text", delta: delta.content });
+        }
+
+        for (const call of delta.tool_calls ?? []) {
+          const index = call.index;
+          if (!toolCalls[index]) {
+            toolCalls[index] = {
+              id: "",
+              type: "function",
+              function: { name: "", arguments: "" },
+            };
+          }
+
+          const target = toolCalls[index];
+
+          if (call.id) target.id = call.id;
+
+          if (call.function?.name) {
+            target.function.name = call.function.name;
+          }
+
+          if (call.function?.arguments) {
+            target.function.arguments += call.function.arguments;
+          }
+        }
       }
+      const assistantMessage: OpenAI.Chat.Completions.ChatCompletionMessageParam =
+        {
+          role: "assistant",
+          content: content || null,
+          ...(Object.keys(toolCalls).length > 0
+            ? {
+                tool_calls: Object.keys(toolCalls)
+                  .map(Number)
+                  .sort((a, b) => a - b)
+                  .map((index) => toolCalls[index]!),
+              }
+            : {}),
+        };
 
       messages.push(assistantMessage);
 
       if (!assistantMessage.tool_calls?.length) {
-        return result(assistantMessage.content ?? "");
+        return result(fullResponse);
       }
 
       for (const toolCall of assistantMessage.tool_calls) {
@@ -140,6 +203,10 @@ export async function runAgent(
             ) {
               throw new Error("Invalid command");
             }
+            onEvent?.({
+              type: "tool_start",
+              name: toolCall.function.name,
+            });
             const result = await sandbox.runCommand({
               cmd: "bash",
               args: ["-c", command],
@@ -150,6 +217,12 @@ export async function runAgent(
               role: "tool",
               tool_call_id: toolCall.id,
               content:
+                (await result.stdout?.()) || (await result.stderr?.()) || "",
+            });
+            onEvent?.({
+              type: "tool_end",
+              name: toolCall.function.name,
+              output:
                 (await result.stdout?.()) || (await result.stderr?.()) || "",
             });
             console.log("bash command executed successfully:", command);
@@ -168,6 +241,11 @@ export async function runAgent(
 
             console.log("Executing python code:", code);
 
+            onEvent?.({
+              type: "tool_start",
+              name: toolCall.function.name,
+            });
+
             const result = await sandbox.runCommand({
               cmd: "python3",
               args: ["-c", code],
@@ -180,7 +258,12 @@ export async function runAgent(
               content:
                 (await result.stdout?.()) || (await result.stderr?.()) || "",
             });
-
+            onEvent?.({
+              type: "tool_end",
+              name: toolCall.function.name,
+              output:
+                (await result.stdout?.()) || (await result.stderr?.()) || "",
+            });
             console.log("python code executed successfully:", code);
           } catch (error) {
             console.error("Error executing python code:", error);
@@ -204,6 +287,11 @@ export async function runAgent(
             if (!fileContent) {
               throw new Error(`File not found at path: ${file_path}`);
             }
+
+            onEvent?.({
+              type: "tool_start",
+              name: toolCall.function.name,
+            });
             const fileId = crypto.randomUUID();
 
             await fs.mkdir("./uploads", { recursive: true });
@@ -220,6 +308,11 @@ export async function runAgent(
               "Download url sent to agent:",
               `http://localhost:3000/download/${fileId}`,
             );
+            onEvent?.({
+              type: "tool_end",
+              name: toolCall.function.name,
+              output: `File attached successfully. Download URL: http://localhost:3000/download/${fileId}`,
+            });
             console.log("File attached successfully:", display_name);
           } catch (error) {
             messages.push({
@@ -230,6 +323,10 @@ export async function runAgent(
           }
         } else if (toolCall.function.name === "list_uploaded_files") {
           try {
+            onEvent?.({
+              type: "tool_start",
+              name: toolCall.function.name,
+            });
             if (!sandboxFiles || sandboxFiles.length === 0) {
               messages.push({
                 role: "tool",
@@ -249,6 +346,12 @@ export async function runAgent(
                 content: `Uploaded files:\n${fileList}`,
               });
             }
+
+            onEvent?.({
+              type: "tool_end",
+              name: toolCall.function.name,
+              output: `File attached successfully.`,
+            });
 
             console.log("DEBUG: Uploaded files for agent:", sandboxFiles);
           } catch (error) {

@@ -1,6 +1,6 @@
 import express from "express";
 import "dotenv/config";
-import { fileStorage, runAgent } from "./agent.js";
+import { fileStorage, runAgent, type AgentEvent } from "./agent.js";
 import multer from "multer";
 import path from "path";
 import type OpenAI from "openai";
@@ -112,12 +112,38 @@ app.post("/api/chat", upload.array("files", 5), async (req, res) => {
       },
     });
 
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const sendEvent = (
+      event:
+        | AgentEvent
+        | {
+            type: "conversation";
+            conversationId: string;
+          },
+    ) => {
+      res.write(`event: ${event.type}\n`);
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    sendEvent({
+      type: "conversation",
+      conversationId: conversation.id,
+    });
+
     const { response, newMessages } = await runAgent(
       message,
       [...previousFiles, ...newFiles],
       history,
+      (event) => {
+        sendEvent(event);
+      },
     );
-    
+
     // Explicit increasing timestamps keep the replay order stable.
     const base = Date.now();
     await prisma.message.createMany({
@@ -134,16 +160,24 @@ app.post("/api/chat", upload.array("files", 5), async (req, res) => {
       })),
     });
 
-    res.status(200).json({
-      conversationId: conversation.id,
-      response,
-    });
+    sendEvent({ type: "done", conversationId: conversation.id, response });
+    res.end();
   } catch (error) {
     console.error("AI request failed:", error);
 
-    res.status(500).json({
-      error: "Failed to generate a response",
-    });
+    if (res.headersSent) {
+      res.write(
+        `event: error\ndata: ${JSON.stringify({
+          type: "error",
+          message: "Failed to generate a response",
+        })}\n\n`,
+      );
+      res.end();
+    } else {
+      res.status(500).json({
+        error: "Failed to generate a response",
+      });
+    }
   }
 });
 
