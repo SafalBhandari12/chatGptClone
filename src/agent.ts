@@ -78,40 +78,46 @@ export async function runAgent(
     );
   }
 
-  await sandbox.runCommand({
-    cmd: "pip",
-    args: ["install", ...INSTALLED_PACKAGES],
-  });
-
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content:
-        "You are a helpful assistant that can run bash commands and Python code in an isolated environment. " +
-        `These Python packages are pre-installed: ${INSTALLED_PACKAGES.join(", ")} ` +
-        "Users may upload files (PPT, PDF, CSV, DOCX, etc) that you can work with. " +
-        "Use the list_uploaded_files tool to see what files were uploaded and their paths. " +
-        "You can read files using bash (cat command), and edit them using Python. " +
-        "When you edit files, save them to /vercel/sandbox/, then use attach_file to make them downloadable. " +
-        "When you use attach_file and get a download link back, include that link in your response to the user." +
-        "Files are in /vercel/sandbox/ directory. ",
-    },
-    ...history,
-    {
-      role: "user",
-      content: userMessage,
-    },
-  ];
-
-  const newMessagesStart = messages.length;
-  const result = (response: string): AgentResult => ({
-    response,
-    newMessages: messages.slice(newMessagesStart),
-  });
-
-  let fullResponse = "";
-
   try {
+    
+    const install = await sandbox.runCommand({
+      cmd: "pip",
+      args: ["install", ...INSTALLED_PACKAGES],
+    });
+
+    if(install.exitCode !== 0) {
+      const errorOutput = (await install.stderr?.()) || "Unknown error";
+      throw new Error(`Failed to install packages: ${errorOutput}`);
+    }
+    
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      {
+        role: "system",
+        content:
+          "You are a helpful assistant that can run bash commands and Python code in an isolated environment. " +
+          `These Python packages are pre-installed: ${INSTALLED_PACKAGES.join(", ")} ` +
+          "Users may upload files (PPT, PDF, CSV, DOCX, etc) that you can work with. " +
+          "Use the list_uploaded_files tool to see what files were uploaded and their paths. " +
+          "You can read files using bash (cat command), and edit them using Python. " +
+          "When you edit files, save them to /vercel/sandbox/, then use attach_file to make them downloadable. " +
+          "When you use attach_file and get a download link back, include that link in your response to the user." +
+          "Files are in /vercel/sandbox/ directory. ",
+      },
+      ...history,
+      {
+        role: "user",
+        content: userMessage,
+      },
+    ];
+
+    const newMessagesStart = messages.length;
+    const result = (response: string): AgentResult => ({
+      response,
+      newMessages: messages.slice(newMessagesStart),
+    });
+
+    let fullResponse = "";
+
     for (let i = 0; i < 8; i++) {
       console.log(`Iteration ${i + 1}: Sending messages to OpenAI API...`);
 
