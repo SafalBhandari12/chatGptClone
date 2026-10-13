@@ -8,7 +8,7 @@ import crypto from "crypto";
 import multer from "multer";
 import { saveLog } from "./logger.js";
 
-const INSTALLED_PACKAGES = [
+export const INSTALLED_PACKAGES = [
   "pandas",
   "reportlab",
   "python-pptx",
@@ -30,6 +30,9 @@ export type AgentResult = {
 
 const fileStorage: Record<string, { path: string; name: string }> = {};
 
+const elapsed = (start: number) =>
+  `${((performance.now() - start) / 1000).toFixed(2)}s`;
+
 export async function runAgent(
   userMessage: string,
   uploadedFiles?: Array<{
@@ -41,9 +44,17 @@ export async function runAgent(
   onEvent?: (event: AgentEvent) => void,
 ): Promise<AgentResult> {
   const startedAt = new Date().toISOString();
+  const requestStart = performance.now();
+
+  const sandboxStart = performance.now();
   const sandbox = await Sandbox.create({
-    runtime: "python3.13",
+    source: {
+      type: "snapshot",
+      snapshotId: process.env.VERCEL_SNAPSHOT_ID!,
+    },
   });
+  console.log(`[timing] sandbox creation: ${elapsed(sandboxStart)}`);
+
   const sandboxFiles: Array<{
     originalName: string;
     sandboxPath: string;
@@ -51,6 +62,7 @@ export async function runAgent(
   }> = [];
 
   if (uploadedFiles && uploadedFiles.length > 0) {
+    const uploadStart = performance.now();
     const results = await Promise.all(
       uploadedFiles.map(async (file) => {
         const fileContent = await fs.readFile(file.path);
@@ -67,6 +79,9 @@ export async function runAgent(
 
     await sandbox.writeFiles(
       results.map(({ path, content }) => ({ path, content })),
+    );
+    console.log(
+      `[timing] file upload (${results.length} files): ${elapsed(uploadStart)}`,
     );
 
     sandboxFiles.push(
@@ -98,15 +113,6 @@ export async function runAgent(
   ];
 
   try {
-    const install = await sandbox.runCommand({
-      cmd: "pip",
-      args: ["install", ...INSTALLED_PACKAGES],
-    });
-
-    if (install.exitCode !== 0) {
-      const errorOutput = (await install.stderr?.()) || "Unknown error";
-      throw new Error(`Failed to install packages: ${errorOutput}`);
-    }
 
     const newMessagesStart = messages.length;
     const result = (response: string): AgentResult => ({
@@ -119,6 +125,8 @@ export async function runAgent(
     for (let i = 0; i < 8; i++) {
       console.log(`Iteration ${i + 1}: Sending messages to OpenAI API...`);
 
+      const llmStart = performance.now();
+      let firstTokenLogged = false;
       const stream = await openai.chat.completions.create({
         model: model,
         messages,
@@ -141,6 +149,13 @@ export async function runAgent(
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta;
         if (!delta) continue;
+
+        if (!firstTokenLogged) {
+          firstTokenLogged = true;
+          console.log(
+            `[timing] LLM iteration ${i + 1} first chunk: ${elapsed(llmStart)}`,
+          );
+        }
 
         if (delta.content) {
           content += delta.content;
@@ -171,6 +186,10 @@ export async function runAgent(
           }
         }
       }
+      console.log(
+        `[timing] LLM iteration ${i + 1} total: ${elapsed(llmStart)}`,
+      );
+
       const assistantMessage: OpenAI.Chat.Completions.ChatCompletionMessageParam =
         {
           role: "assistant",
@@ -195,6 +214,7 @@ export async function runAgent(
         if (toolCall.type !== "function") {
           continue;
         }
+        const toolStart = performance.now();
         if (toolCall.function.name === "bash") {
           try {
             const { command } = JSON.parse(toolCall.function.arguments) as {
@@ -367,6 +387,9 @@ export async function runAgent(
             });
           }
         }
+        console.log(
+          `[timing] tool ${toolCall.function.name}: ${elapsed(toolStart)}`,
+        );
       }
     }
     messages.push({
@@ -375,6 +398,7 @@ export async function runAgent(
     });
     return result("Number of iterations exceeded. Please refine your request.");
   } finally {
+    console.log(`[timing] total runAgent: ${elapsed(requestStart)}`);
     await saveLog({
       startedAt,
       endedAt: new Date().toISOString(),
