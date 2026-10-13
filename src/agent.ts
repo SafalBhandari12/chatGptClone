@@ -8,6 +8,14 @@ import crypto from "crypto";
 import multer from "multer";
 import { saveLog } from "./logger.js";
 
+const INSTALLED_PACKAGES = [
+  "pandas",
+  "reportlab",
+  "python-pptx",
+  "pypdf",
+  "python-docx",
+];
+
 export type AgentEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; name: string }
@@ -72,14 +80,7 @@ export async function runAgent(
 
   await sandbox.runCommand({
     cmd: "pip",
-    args: [
-      "install",
-      "pandas",
-      "reportlab",
-      "python-pptx",
-      "pypdf",
-      "python-docx",
-    ],
+    args: ["install", ...INSTALLED_PACKAGES],
   });
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -87,13 +88,13 @@ export async function runAgent(
       role: "system",
       content:
         "You are a helpful assistant that can run bash commands and Python code in an isolated environment. " +
-        "You can generate files like CSV (using pandas), PDF (using reportlab), and PowerPoint presentations (using python-pptx). " +
+        `These Python packages are pre-installed: ${INSTALLED_PACKAGES.join(", ")} ` +
         "Users may upload files (PPT, PDF, CSV, DOCX, etc) that you can work with. " +
         "Use the list_uploaded_files tool to see what files were uploaded and their paths. " +
         "You can read files using bash (cat command), and edit them using Python. " +
         "When you edit files, save them to /vercel/sandbox/, then use attach_file to make them downloadable. " +
         "When you use attach_file and get a download link back, include that link in your response to the user." +
-        "Files are in /vercel/sandbox/ directory. You can read files using bash (cat command), and edit them using Python. ",
+        "Files are in /vercel/sandbox/ directory. ",
     },
     ...history,
     {
